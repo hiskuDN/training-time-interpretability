@@ -29,6 +29,9 @@ CHECKPOINT_DIR = "/checkpoints"
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .pip_install_from_requirements("requirements.txt")
+    .add_local_dir("src", "/root/project/src")
+    .add_local_dir("configs", "/root/project/configs")
+    .add_local_file("train.py", "/root/project/train.py")
 )
 
 # ---------------------------------------------------------------------------
@@ -46,8 +49,6 @@ app = modal.App("training-time-interpretability", image=image)
         CHECKPOINT_DIR: checkpoint_volume,
     },
     secrets=[modal.Secret.from_name("wandb-secret")],
-    # Mount the local source code into the container
-    mounts=[modal.Mount.from_local_dir(".", remote_path="/root/project")],
 )
 def train(config: str, extra: str = ""):
     """
@@ -80,7 +81,6 @@ def train(config: str, extra: str = ""):
 
 @app.function(
     volumes={DATA_DIR: data_volume},
-    mounts=[modal.Mount.from_local_dir(".", remote_path="/root/project")],
     timeout=60 * 60 * 2,
 )
 def cache_dataset():
