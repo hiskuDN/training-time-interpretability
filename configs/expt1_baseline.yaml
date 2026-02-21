@@ -1,0 +1,4 @@
+_base_: "base.yaml"
+name: "expt1_baseline"
+wandb_group: "expt1"
+regularizers: []

@@ -1,0 +1,7 @@
+_base_: "base.yaml"
+name: "expt1_polysemantic_1e-3"
+wandb_group: "expt1"
+regularizers:
+  - name: "polysemanticity"
+    weight: 0.001
+    layers: "all"

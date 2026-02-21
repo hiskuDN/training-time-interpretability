@@ -1,0 +1,37 @@
+model:
+  vocab_size: 50257
+  max_seq_len: 512
+  n_layers: 6
+  n_heads: 6
+  d_model: 384
+  d_ff: 1536
+  dropout: 0.1
+  bias: false
+
+data:
+  dataset: "skeskinen/TinyStories-hf"
+  tokenizer: "gpt2"
+  max_length: 512
+  num_workers: 4
+  data_cache_dir: null
+
+train:
+  batch_size: 64
+  learning_rate: 3.0e-4
+  weight_decay: 0.1
+  warmup_steps: 1000
+  max_steps: 50000
+  max_grad_norm: 1.0
+  use_amp: true
+  log_every: 50
+  eval_every: 1000
+  save_every: 5000
+  num_eval_activation_batches: 10
+  seed: 42
+  gradient_accumulation_steps: 1
+
+regularizers: []
+
+wandb_project: "training-time-interpretability"
+wandb_group: "expt1"
+output_dir: "outputs"

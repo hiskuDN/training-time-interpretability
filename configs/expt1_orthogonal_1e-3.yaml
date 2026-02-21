@@ -1,0 +1,8 @@
+_base_: "base.yaml"
+name: "expt1_orthogonal_1e-3"
+wandb_group: "expt1"
+regularizers:
+  - name: "orthogonality"
+    weight: 0.001
+    max_tokens: 4096
+    layers: "all"
