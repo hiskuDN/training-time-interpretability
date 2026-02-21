@@ -78,8 +78,8 @@ def main():
     )
     model = GPT(model_cfg).to(device)
     print(f"Parameters: {model.num_params():,} total, {model.num_params(non_embedding=True):,} non-embedding")
-    wandb.log({"model/total_params": model.num_params(),
-               "model/non_embedding_params": model.num_params(non_embedding=True)})
+    wandb.config.update({"model/total_params": model.num_params(),
+                          "model/non_embedding_params": model.num_params(non_embedding=True)})
 
     # Optimizer + scheduler
     optimizer = torch.optim.AdamW(

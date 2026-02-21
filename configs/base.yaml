@@ -27,6 +27,7 @@ train:
   eval_every: 1000
   save_every: 5000
   num_eval_activation_batches: 10
+  max_eval_batches: 200
   seed: 42
   gradient_accumulation_steps: 1
 

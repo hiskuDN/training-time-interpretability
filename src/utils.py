@@ -44,6 +44,7 @@ class TrainConfig:
     eval_every: int = 1000
     save_every: int = 5000
     num_eval_activation_batches: int = 10
+    max_eval_batches: int = 200  # cap val batches per eval; -1 = full val set
     seed: int = 42
     gradient_accumulation_steps: int = 1
 

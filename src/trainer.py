@@ -132,8 +132,11 @@ class Trainer:
         collected_activations = []
         collected_input_ids = []
 
+        max_batches = self.config.max_eval_batches
         with torch.no_grad():
             for i, batch in enumerate(self.val_loader):
+                if max_batches > 0 and i >= max_batches:
+                    break
                 input_ids = batch["input_ids"].to(self.device)
                 targets = batch["targets"].to(self.device)
                 collect = i < self.config.num_eval_activation_batches
