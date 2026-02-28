@@ -6,3 +6,5 @@ wandb>=0.15
 pyyaml>=6.0
 numpy
 tqdm
+seaborn
+matplotlib

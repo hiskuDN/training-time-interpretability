@@ -76,6 +76,8 @@ modal run --detach modal_app.py --config configs/expt1_orthogonal_1e-2.yaml --ex
 
 Checkpoints are saved to the `tti-checkpoints` Modal Volume. Results are logged to the `expt1` group in W&B under the `training-time-interpretability` project.
 
+**Results (seed 42, baseline vs. orthogonal λ=0.01):** [`docs/results-expt1.md`](docs/results-expt1.md)
+
 **Implementation notes:**
 - The orthogonality penalty computes neuron-neuron cosine similarity: activations are reshaped to `[batch*seq_len, d_model]`, transposed to give one vector per neuron, and a `[d_model, d_model]` similarity matrix is computed. Off-diagonal elements are penalized. See `src/losses.py`.
 - The polysemanticity penalty aggregates activation magnitudes by token type via `scatter_add`, normalizes per neuron to a distribution, and penalizes the entropy. See `src/losses.py`.
