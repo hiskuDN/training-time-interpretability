@@ -55,17 +55,16 @@ Logistic regression probes trained on per-layer `mlp_out` activations to predict
 | Layer | Base Acc | Orth Acc | Δ Acc | Base F1 | Orth F1 | Δ F1 |
 |-------|----------|----------|-------|---------|---------|------|
 | 0 | 0.9621 | 0.9619 | −0.0002 | 0.8445 | 0.8446 | +0.0001 |
-| 1 | 0.9643 | 0.9641 | −0.0002 | 0.8495 | 0.8490 | −0.0005 |
-| 2 | 0.9518 | 0.9495 | −0.0023 | 0.8524 | — | — |
-| 3 | 0.9234 | — | — | 0.8315 | — | — |
-| 4 | 0.8936 | — | — | 0.7986 | — | — |
-| 5 | 0.8642 | — | — | 0.7749 | — | — |
-
-*Orthogonal layers 3–5 and macro F1 for layers 2–5 pending full artifact download. W&B confirms acc L0=0.9619, L1=0.9641, L2=0.9495 for the orthogonal run.*
+| 1 | 0.9643 | 0.9641 | −0.0002 | 0.8495 | 0.8511 | +0.0016 |
+| 2 | 0.9518 | 0.9495 | −0.0023 | 0.8524 | 0.8483 | −0.0041 |
+| 3 | 0.9234 | 0.9232 | −0.0002 | 0.8315 | 0.8327 | +0.0012 |
+| 4 | 0.8936 | 0.8873 | −0.0063 | 0.7986 | 0.7988 | +0.0002 |
+| 5 | 0.8642 | 0.8662 | +0.0020 | 0.7749 | 0.7708 | −0.0041 |
 
 **Findings:**
 - Probe accuracy **decreases monotonically** from layer 0 → 5 in both models — a clean syntactic-in-early-layers, semantic-in-later-layers pattern.
-- The orthogonality constraint has **no meaningful effect on probe accuracy** at any layer measured so far. More orthogonal representations are not less POS-decodable.
+- The orthogonality constraint has **no meaningful effect on probe accuracy or macro F1** at any layer. The largest delta is −0.006 accuracy at L4 and −0.004 F1 at L2/L5, well within noise for a 5000-text probe set.
+- Neither model dominates: orthogonal is marginally better at F1 for layers 1, 3, 4 and marginally worse at 2, 5 — no consistent direction.
 - Macro F1 peaks at layer 2 (not layer 0/1), because rarer tags (INTJ, PROPN, X) resolve slightly better in middle layers despite overall accuracy being lower there.
 
 ### Per-class F1 (Baseline, all layers)
@@ -99,7 +98,17 @@ Tags are sorted by F1 at layer 0. Pattern is consistent across layers.
 
 ## 4. Top-k Activating Contexts
 
-Collected with k=20 per neuron per layer over the full val set. Inspectable via `notebooks/evaluation.ipynb` → Section 3. Spot-checking shows sensible, story-level contexts activating neurons — full analysis deferred to post-hoc inspection.
+Collected with k=20 per neuron per layer over the full val set. Inspectable via `notebooks/evaluation.ipynb` → Section 3.
+
+Spot-check: **Layer 3, Neuron 0**
+
+| | Baseline | Orthogonal λ=1e-2 |
+|---|---|---|
+| Peak activation | +0.89 | +1.61 |
+| Sign of top-3 | mixed (+/−/+) | all positive |
+| Top contexts | bunny story, robot story, girl-with-skull story | "Once upon a time…" openings (×3) |
+
+The orthogonal neuron fires ~80% stronger, exclusively on story openings, with no negative activations in the top-k — consistent with a more specialized, monosemantic response. The baseline neuron responds to a more diffuse mix of story types with bidirectional activations. This is a single neuron and requires systematic analysis to generalise, but it aligns with what the cosine sim results suggest.
 
 ---
 

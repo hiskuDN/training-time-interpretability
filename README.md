@@ -65,13 +65,13 @@ For each, λ is swept over `[0.001, 0.01, 0.1]` — 7 configs total, run with 3 
 **Running an experiment:**
 ```bash
 # Baseline
-modal run --detach modal_app.py --config configs/expt1_baseline.yaml
+modal run --detach modal_app.py::main --config configs/expt1_baseline.yaml
 
 # Orthogonality penalty, λ=0.01
-modal run --detach modal_app.py --config configs/expt1_orthogonal_1e-2.yaml
+modal run --detach modal_app.py::main --config configs/expt1_orthogonal_1e-2.yaml
 
 # Different seed
-modal run --detach modal_app.py --config configs/expt1_orthogonal_1e-2.yaml --extra "--train.seed 1"
+modal run --detach modal_app.py::main --config configs/expt1_orthogonal_1e-2.yaml --extra "--train.seed 1"
 ```
 
 Checkpoints are saved to the `tti-checkpoints` Modal Volume. Results are logged to the `expt1` group in W&B under the `training-time-interpretability` project.
