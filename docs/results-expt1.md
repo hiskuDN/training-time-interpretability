@@ -61,9 +61,21 @@ Mean absolute off-diagonal cosine similarity between neuron activation vectors p
 | Poly λ=1e-2 | 1.000 | −0.002 | 1.000 |
 | Poly λ=1e-1 | 1.000 | −0.003 | 1.000 |
 
-**Finding: The polysemantic regularizer causes representational collapse into anti-correlated pairs.** The mean absolute off-diagonal value reaches ~1.0, but the signed mean is near 0 with standard deviation ~1.0. This means cosine similarities are spread across the full [−1, +1] range — many neuron pairs are nearly perfectly correlated (+1) or anti-correlated (−1), with the positive and negative cases cancelling out.
+The mean absolute off-diagonal reaches ~1.0, but the signed mean is ~0 with std ~1.0 — cosine similarities are spread across the full [−1, +1] range, not all aligned. The top-k context analysis reveals why.
 
-This is a degenerate solution: instead of neurons becoming monosemantic (activating selectively on specific token types), the model learns anti-correlated neuron pairs that jointly cover a token type — one fires positively, its pair fires negatively, both with low entropy individually. The entropy penalty is satisfied without producing genuinely interpretable features. This pathological geometry holds at every tested λ value including the smallest (1e-3), suggesting the regularizer fundamentally incentivises this collapse rather than true monosemanticity.
+**Finding: The polysemantic regularizer causes neurons to collapse onto a handful of specific examples.**
+
+| | Baseline | Poly λ=1e-3 | Poly λ=1e-1 |
+|---|---|---|---|
+| Peak activation magnitude (L0) | ~1.4 | ~5.1 | **~142** |
+| Unique top contexts across 50 neurons (L3) | 48 | 48 | **1** |
+| Neurons sharing the same #1 context (L0, top 20) | — | — | **13/20** |
+
+At λ=1e-1: every one of the 50 layer-3 neurons inspected has the same top-activating context. Activation magnitudes are ~100× larger than baseline. The model found a single "magic story" that maximally satisfies the entropy loss and collapsed all neurons onto it — some firing strongly positive, others strongly negative, producing the high-std, mean-zero cosine sim distribution we observed.
+
+At λ=1e-3: magnitudes are more moderate (~5× baseline) and context diversity is comparable to baseline (48 unique contexts across 50 neurons), but the contexts are less thematically coherent — generic story openings rather than the specific clusters (e.g. "crocodile stories", "library stories") that emerge in the baseline and orthogonal models.
+
+**Root cause:** the regularizer measures entropy over token-type distributions, not over semantic concepts. The model can achieve low entropy — and satisfy the loss — by spiking very strongly on a few specific *examples*, making those examples dominate the per-neuron token distribution. This is a gaming of the metric rather than genuine monosemanticity. The fix would require measuring concept-level selectivity, not token-level entropy.
 
 ---
 
@@ -119,8 +131,8 @@ The orthogonal neuron fires ~80% stronger, exclusively on story openings, with n
 | Dimension | Orthogonal | Polysemantic |
 |-----------|------------|--------------|
 | Perplexity cost | None (all λ) | None (all λ) |
-| Geometry effect | Strong, diminishing returns after λ=1e-3 | Degenerate — collapses to anti-correlated pairs |
-| Optimal λ | 1e-3 | N/A — regulariser is misspecified |
+| Geometry effect | Strong, diminishing returns after λ=1e-3 | Collapses neurons onto a few specific examples |
+| Optimal λ | 1e-3 | N/A — regulariser games the metric |
 | Probe accuracy | Unchanged | Minor degradation, scales with λ |
 | Qualitative (top-k) | Promising — neurons appear more specialised | Not evaluated (geometry pathological) |
 
@@ -128,7 +140,7 @@ The orthogonal neuron fires ~80% stronger, exclusively on story openings, with n
 
 1. **Orthogonal regularizer works as intended** — it reduces neuron correlation, is free perplexity-wise, and leaves downstream decodability intact. The sweet spot is λ=1e-3; going higher causes middle layers to resist and partially undo the gains.
 
-2. **Polysemantic regularizer is misspecified.** Minimising per-neuron token entropy doesn't produce monosemantic neurons — it produces anti-correlated neuron pairs that satisfy the entropy criterion collectively while remaining individually low-entropy. The fix would be to add an explicit diversity penalty between neurons (which is exactly what the orthogonal regulariser does).
+2. **Polysemantic regularizer games its own metric.** Minimising per-neuron token-type entropy doesn't produce monosemantic neurons — it produces neurons that spike very strongly on a handful of specific examples, which trivially satisfies low entropy without developing semantic selectivity. At λ=1e-1, all 50 inspected layer-3 neurons share the same top-activating context; activation magnitudes are ~100× the baseline. The regularizer measures the wrong thing: token-type distributions can be gamed by extreme-valued responses to a few inputs, whereas genuine monosemanticity requires consistent selective response to a *concept* across many diverse inputs.
 
 3. **Linear probes are an insensitive interpretability metric** for this type of intervention. Neuron geometry changes substantially while POS decodability barely moves, suggesting probes measure a different axis of interpretability than monosemanticity.
 
