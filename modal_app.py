@@ -229,6 +229,11 @@ def evaluate(
     reservoirs: dict[int, list] = {i: [] for i in range(model_cfg.n_layers)}
     res_counts: dict[int, int] = {i: 0 for i in range(model_cfg.n_layers)}
 
+    # Sparsity accumulators (mlp_hidden preferred; fallback to mlp_out)
+    sparsity_threshold = 0.01
+    sparsity_sums: dict[int, float] = {i: 0.0 for i in range(model_cfg.n_layers)}
+    sparsity_batch_counts: dict[int, int] = {i: 0 for i in range(model_cfg.n_layers)}
+
     with torch.no_grad():
         for batch in val_loader:
             input_ids = batch["input_ids"].to(device)
@@ -245,6 +250,12 @@ def evaluate(
 
             # Top-k update
             topk_collector.update(activations, input_ids, tokenizer)
+
+            # Sparsity
+            for layer_idx, acts_dict in activations.items():
+                hidden = acts_dict.get("mlp_hidden") or acts_dict["mlp_out"]
+                sparsity_sums[layer_idx] += (hidden.abs() < sparsity_threshold).float().mean().item()
+                sparsity_batch_counts[layer_idx] += 1
 
             # Reservoir sampling for heatmaps
             for layer_idx, acts_dict in activations.items():
@@ -278,6 +289,16 @@ def evaluate(
     # Save perplexity
     with open(os.path.join(out_dir, "perplexity.json"), "w") as f:
         json.dump(perplexity_result, f, indent=2)
+
+    # Compute and save sparsity
+    sparsity_result = {
+        f"layer_{i}": sparsity_sums[i] / max(sparsity_batch_counts[i], 1)
+        for i in range(model_cfg.n_layers)
+    }
+    sparsity_result["mean"] = sum(sparsity_result.values()) / model_cfg.n_layers
+    with open(os.path.join(out_dir, "sparsity.json"), "w") as f:
+        json.dump(sparsity_result, f, indent=2)
+    print(f"  Saved sparsity.json  mean={sparsity_result['mean']:.4f}")
 
     # Compute heatmaps
     sim_matrices = {}
@@ -355,6 +376,9 @@ def evaluate(
     for layer_idx, r in probe_results.items():
         wandb_metrics[f"eval/probe_accuracy/layer_{layer_idx}"] = r["accuracy"]
         wandb_metrics[f"eval/probe_macro_f1/layer_{layer_idx}"] = r["macro_f1"]
+    for i in range(model_cfg.n_layers):
+        wandb_metrics[f"eval/sparsity/layer_{i}"] = sparsity_result[f"layer_{i}"]
+    wandb_metrics["eval/sparsity/mean"] = sparsity_result["mean"]
 
     wandb.log(wandb_metrics)
     wandb.finish()
