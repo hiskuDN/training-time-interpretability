@@ -186,13 +186,18 @@ class L1ActivationRegularizer(Regularizer):
 
     def compute(self, activations: dict, **context) -> torch.Tensor:
         first = next(iter(activations.values()))
-        device = (first.get("mlp_hidden") or first["mlp_out"]).device
+        _first_acts = first.get("mlp_hidden")
+        if _first_acts is None:
+            _first_acts = first["mlp_out"]
+        device = _first_acts.device
         penalty = torch.tensor(0.0, device=device)
         count = 0
         for layer_idx in self._target_layers(activations):
             if layer_idx not in activations:
                 continue
-            acts = activations[layer_idx].get("mlp_hidden") or activations[layer_idx]["mlp_out"]
+            acts = activations[layer_idx].get("mlp_hidden")
+            if acts is None:
+                acts = activations[layer_idx]["mlp_out"]
             penalty = penalty + acts.abs().mean()
             count += 1
         return penalty / max(count, 1)
