@@ -1,0 +1,7 @@
+_base_: "base.yaml"
+name: "expt2_topk_25pct"
+wandb_group: "expt2"
+train:
+  seed: 42
+model:
+  mlp_topk_ratio: 0.25

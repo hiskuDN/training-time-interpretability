@@ -165,6 +165,40 @@ class PolysemanticitRegularizer(Regularizer):
 
 
 # ---------------------------------------------------------------------------
+# L1 activation regularizer
+# ---------------------------------------------------------------------------
+
+class L1ActivationRegularizer(Regularizer):
+    """
+    Penalize L1 norm of MLP hidden activations (post-GELU, d_ff dimension).
+    Falls back to mlp_out (d_model) if mlp_hidden is not in the activation dict.
+    """
+
+    def __init__(self, weight: float, layers: str = "all"):
+        self.name = "l1_activation"
+        self.weight = weight
+        self._layers = layers
+
+    def _target_layers(self, activations: dict) -> list[int]:
+        if self._layers == "all":
+            return list(activations.keys())
+        return [int(i) for i in self._layers.split(",")]
+
+    def compute(self, activations: dict, **context) -> torch.Tensor:
+        first = next(iter(activations.values()))
+        device = (first.get("mlp_hidden") or first["mlp_out"]).device
+        penalty = torch.tensor(0.0, device=device)
+        count = 0
+        for layer_idx in self._target_layers(activations):
+            if layer_idx not in activations:
+                continue
+            acts = activations[layer_idx].get("mlp_hidden") or activations[layer_idx]["mlp_out"]
+            penalty = penalty + acts.abs().mean()
+            count += 1
+        return penalty / max(count, 1)
+
+
+# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
@@ -177,6 +211,10 @@ def build_regularizers(reg_configs: list) -> list[Regularizer]:
             layers=rc.layers,
         ),
         "polysemanticity": lambda rc: PolysemanticitRegularizer(
+            weight=rc.weight,
+            layers=rc.layers,
+        ),
+        "l1_activation": lambda rc: L1ActivationRegularizer(
             weight=rc.weight,
             layers=rc.layers,
         ),

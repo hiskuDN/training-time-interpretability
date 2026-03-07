@@ -20,6 +20,7 @@ class ModelConfig:
     d_ff: int = 1536
     dropout: float = 0.1
     bias: bool = False
+    mlp_topk_ratio: float = 0.0
 
 
 @dataclass

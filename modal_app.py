@@ -107,6 +107,8 @@ def evaluate(
     checkpoint_path: str = "",
     n_probe_texts: int = 5000,
     topk_k: int = 20,
+    mlp_topk_ratio: float = 0.0,
+    wandb_group: str = "expt1_eval",
 ):
     """
     Run the full evaluation pipeline for a trained model.
@@ -121,6 +123,8 @@ def evaluate(
                           /checkpoints/{run_name}/final/checkpoint.pt
         n_probe_texts:    number of raw val texts for POS probing
         topk_k:           top-k contexts to collect per neuron
+        mlp_topk_ratio:   top-k ratio for Top-K MLP models (0.0 = disabled)
+        wandb_group:      W&B group name for this evaluation run
     """
     import json
     import os
@@ -172,6 +176,7 @@ def evaluate(
         d_ff=1536,
         dropout=0.0,
         bias=False,
+        mlp_topk_ratio=mlp_topk_ratio,
     )
     model = GPT(model_cfg).to(device)
     model.load_state_dict(ckpt["model"])
@@ -202,7 +207,7 @@ def evaluate(
     # -----------------------------------------------------------------------
     wandb.init(
         project="training-time-interpretability",
-        group="expt1_eval",
+        group=wandb_group,
         name=run_name,
     )
 
@@ -407,17 +412,21 @@ def eval_main(
     checkpoint_path: str = "",
     n_probe_texts: int = 5000,
     topk_k: int = 20,
+    mlp_topk_ratio: float = 0.0,
+    wandb_group: str = "expt1_eval",
 ):
     """
     Launch evaluation for a trained run.
 
     Usage:
         modal run --detach modal_app.py::eval_main --run-name expt1_baseline_seed42
-        modal run --detach modal_app.py::eval_main --run-name expt1_orthogonal_1e-2_seed42
+        modal run --detach modal_app.py::eval_main --run-name expt2_topk_25pct_seed42 --mlp-topk-ratio 0.25 --wandb-group expt2_eval
     """
     evaluate.remote(
         run_name=run_name,
         checkpoint_path=checkpoint_path,
         n_probe_texts=n_probe_texts,
         topk_k=topk_k,
+        mlp_topk_ratio=mlp_topk_ratio,
+        wandb_group=wandb_group,
     )

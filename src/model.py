@@ -15,6 +15,7 @@ class GPTConfig:
     d_ff: int = 1536
     dropout: float = 0.1
     bias: bool = False
+    mlp_topk_ratio: float = 0.0  # 0.0 = disabled; 0.25 = keep top 25% of d_ff neurons
 
 
 class CausalSelfAttention(nn.Module):
@@ -63,9 +64,18 @@ class MLP(nn.Module):
         self.fc2 = nn.Linear(config.d_ff, config.d_model, bias=config.bias)
         self.act = nn.GELU()
         self.drop = nn.Dropout(config.dropout)
+        self.topk_k = int(config.mlp_topk_ratio * config.d_ff) if config.mlp_topk_ratio > 0 else 0
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.drop(self.fc2(self.act(self.fc1(x))))
+    def forward(self, x: torch.Tensor, return_hidden: bool = False):
+        h = self.act(self.fc1(x))           # [B, S, d_ff]
+        if self.topk_k > 0:
+            # Zero out all but top-k neurons by magnitude (straight-through)
+            threshold = h.abs().topk(self.topk_k, dim=-1).values[..., -1:]
+            h = h * (h.abs() >= threshold).float()
+        out = self.drop(self.fc2(h))
+        if return_hidden:
+            return out, h
+        return out
 
 
 class TransformerBlock(nn.Module):
@@ -79,10 +89,14 @@ class TransformerBlock(nn.Module):
     def forward(self, x: torch.Tensor, return_intermediates: bool = False):
         attn_out = self.attn(self.ln1(x))
         x = x + attn_out
-        mlp_out = self.mlp(self.ln2(x))
+        if return_intermediates:
+            mlp_out, mlp_hidden = self.mlp(self.ln2(x), return_hidden=True)
+        else:
+            mlp_out = self.mlp(self.ln2(x))
+            mlp_hidden = None
         x = x + mlp_out
         if return_intermediates:
-            return x, {"attn_out": attn_out, "mlp_out": mlp_out}
+            return x, {"attn_out": attn_out, "mlp_out": mlp_out, "mlp_hidden": mlp_hidden}
         return x, None
 
 

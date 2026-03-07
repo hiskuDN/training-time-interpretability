@@ -75,6 +75,7 @@ def main():
         d_ff=config.model.d_ff,
         dropout=config.model.dropout,
         bias=config.model.bias,
+        mlp_topk_ratio=config.model.mlp_topk_ratio,
     )
     model = GPT(model_cfg).to(device)
     print(f"Parameters: {model.num_params():,} total, {model.num_params(non_embedding=True):,} non-embedding")
