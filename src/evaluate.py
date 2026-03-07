@@ -28,6 +28,9 @@ def _activation_sparsity(activations: list[dict], threshold: float = 0.01) -> di
     """
     Fraction of neurons that are inactive (|act| < threshold) per layer,
     averaged over all token positions.
+
+    Prefers mlp_hidden (d_ff) when available — this is where Top-K zeros are
+    introduced and where L1 acts. Falls back to mlp_out (d_model) otherwise.
     """
     if not activations:
         return {}
@@ -36,11 +39,12 @@ def _activation_sparsity(activations: list[dict], threshold: float = 0.01) -> di
     metrics = {}
 
     for layer_idx in layer_indices:
+        key = "mlp_hidden" if activations[0][layer_idx].get("mlp_hidden") is not None else "mlp_out"
         all_acts = torch.cat(
-            [batch[layer_idx]["mlp_out"].reshape(-1, batch[layer_idx]["mlp_out"].shape[-1])
+            [batch[layer_idx][key].reshape(-1, batch[layer_idx][key].shape[-1])
              for batch in activations],
             dim=0,
-        )  # [total_tokens, d_model]
+        )  # [total_tokens, d_ff or d_model]
 
         inactive = (all_acts.abs() < threshold).float().mean().item()
         metrics[f"val/sparsity/layer_{layer_idx}"] = inactive
