@@ -253,7 +253,7 @@ def evaluate(
 
             # Sparsity
             for layer_idx, acts_dict in activations.items():
-                hidden = acts_dict.get("mlp_hidden") or acts_dict["mlp_out"]
+                hidden = acts_dict["mlp_hidden"] if acts_dict.get("mlp_hidden") is not None else acts_dict["mlp_out"]
                 sparsity_sums[layer_idx] += (hidden.abs() < sparsity_threshold).float().mean().item()
                 sparsity_batch_counts[layer_idx] += 1
 
