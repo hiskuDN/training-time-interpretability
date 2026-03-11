@@ -234,6 +234,14 @@ def evaluate(
     sparsity_sums: dict[int, float] = {i: 0.0 for i in range(model_cfg.n_layers)}
     sparsity_batch_counts: dict[int, int] = {i: 0 for i in range(model_cfg.n_layers)}
 
+    # Polysemanticity accumulators (entropy of per-neuron token-type distributions)
+    poly_entropy_sums: dict[int, float] = {i: 0.0 for i in range(model_cfg.n_layers)}
+    poly_batch_counts: dict[int, int] = {i: 0 for i in range(model_cfg.n_layers)}
+
+    # Neuron utilization accumulators (fraction of tokens each hidden neuron is active)
+    neuron_active_counts: dict[int, torch.Tensor] = {}
+    neuron_total_tokens: dict[int, int] = {i: 0 for i in range(model_cfg.n_layers)}
+
     with torch.no_grad():
         for batch in val_loader:
             input_ids = batch["input_ids"].to(device)
@@ -256,6 +264,34 @@ def evaluate(
                 hidden = acts_dict["mlp_hidden"] if acts_dict.get("mlp_hidden") is not None else acts_dict["mlp_out"]
                 sparsity_sums[layer_idx] += (hidden.abs() < sparsity_threshold).float().mean().item()
                 sparsity_batch_counts[layer_idx] += 1
+
+            # Polysemanticity (entropy of per-neuron token-type activation distributions)
+            ids_flat = input_ids.reshape(-1)
+            for layer_idx, acts_dict in activations.items():
+                hidden = acts_dict["mlp_hidden"] if acts_dict.get("mlp_hidden") is not None else acts_dict["mlp_out"]
+                B, S, D = hidden.shape
+                acts_flat = hidden.reshape(B * S, D).abs().float()
+                n = min(acts_flat.shape[0], ids_flat.shape[0])
+                acts_n, ids_n = acts_flat[:n], ids_flat[:n]
+                max_id = int(ids_n.max().item()) + 1
+                token_acts = torch.zeros(max_id, D, device=device, dtype=torch.float32)
+                token_acts.scatter_add_(0, ids_n.unsqueeze(1).expand_as(acts_n), acts_n)
+                unique_ids = ids_n.unique()
+                token_dist = token_acts[unique_ids]
+                token_dist = token_dist / (token_dist.sum(dim=0, keepdim=True) + 1e-10)
+                entropy = -(token_dist * torch.log(token_dist + 1e-10)).sum(dim=0).mean().item()
+                poly_entropy_sums[layer_idx] += entropy
+                poly_batch_counts[layer_idx] += 1
+
+            # Neuron utilization (fraction of tokens each hidden neuron is above threshold)
+            for layer_idx, acts_dict in activations.items():
+                hidden = acts_dict["mlp_hidden"] if acts_dict.get("mlp_hidden") is not None else acts_dict["mlp_out"]
+                B, S, D = hidden.shape
+                active = (hidden.abs() > sparsity_threshold).float().sum(dim=[0, 1]).cpu()  # [D]
+                if layer_idx not in neuron_active_counts:
+                    neuron_active_counts[layer_idx] = torch.zeros(D)
+                neuron_active_counts[layer_idx] += active
+                neuron_total_tokens[layer_idx] += B * S
 
             # Reservoir sampling for heatmaps
             for layer_idx, acts_dict in activations.items():
@@ -299,6 +335,34 @@ def evaluate(
     with open(os.path.join(out_dir, "sparsity.json"), "w") as f:
         json.dump(sparsity_result, f, indent=2)
     print(f"  Saved sparsity.json  mean={sparsity_result['mean']:.4f}")
+
+    # Compute and save polysemanticity
+    poly_result = {
+        f"layer_{i}": poly_entropy_sums[i] / max(poly_batch_counts[i], 1)
+        for i in range(model_cfg.n_layers)
+    }
+    poly_result["mean"] = sum(poly_result.values()) / model_cfg.n_layers
+    with open(os.path.join(out_dir, "polysemanticity.json"), "w") as f:
+        json.dump(poly_result, f, indent=2)
+    print(f"  Saved polysemanticity.json  mean={poly_result['mean']:.4f}")
+
+    # Compute and save neuron utilization
+    util_summary = {}
+    util_arrays = {}
+    for layer_idx in range(model_cfg.n_layers):
+        if layer_idx not in neuron_active_counts:
+            continue
+        rates = (neuron_active_counts[layer_idx] / max(neuron_total_tokens[layer_idx], 1)).numpy()
+        util_arrays[f"layer_{layer_idx}"] = rates
+        util_summary[f"layer_{layer_idx}"] = {
+            "mean_utilization": float(rates.mean()),
+            "frac_dead": float((rates < 0.01).mean()),      # active < 1% of tokens
+            "frac_always_on": float((rates > 0.99).mean()), # active > 99% of tokens
+        }
+    np.savez(os.path.join(out_dir, "neuron_utilization.npz"), **util_arrays)
+    with open(os.path.join(out_dir, "neuron_utilization.json"), "w") as f:
+        json.dump(util_summary, f, indent=2)
+    print("  Saved neuron_utilization.json + .npz")
 
     # Compute heatmaps
     sim_matrices = {}
@@ -379,6 +443,13 @@ def evaluate(
     for i in range(model_cfg.n_layers):
         wandb_metrics[f"eval/sparsity/layer_{i}"] = sparsity_result[f"layer_{i}"]
     wandb_metrics["eval/sparsity/mean"] = sparsity_result["mean"]
+    for i in range(model_cfg.n_layers):
+        wandb_metrics[f"eval/polysemanticity/layer_{i}"] = poly_result[f"layer_{i}"]
+    wandb_metrics["eval/polysemanticity/mean"] = poly_result["mean"]
+    for i in range(model_cfg.n_layers):
+        if f"layer_{i}" in util_summary:
+            wandb_metrics[f"eval/neuron_util/frac_dead/layer_{i}"] = util_summary[f"layer_{i}"]["frac_dead"]
+            wandb_metrics[f"eval/neuron_util/frac_always_on/layer_{i}"] = util_summary[f"layer_{i}"]["frac_always_on"]
 
     wandb.log(wandb_metrics)
     wandb.finish()
