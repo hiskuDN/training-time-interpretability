@@ -12,6 +12,11 @@ Running an experiment:
 Running evaluation:
     modal run --detach modal_app.py::eval_main --run-name expt1_baseline_seed42
     modal run --detach modal_app.py::eval_main --run-name expt1_orthogonal_1e-2_seed42
+
+Running SAE training (Experiment 3):
+    modal run --detach modal_app.py::sae_main --run-name expt1_baseline_seed42
+    modal run --detach modal_app.py::sae_main --run-name expt2_topk_25pct_seed42 --mlp-topk-ratio 0.25
+    modal run --detach modal_app.py::sae_main --run-name expt1_baseline_seed42 --sae-config configs/expt3_sae_4x.yaml
 """
 
 import modal
@@ -47,11 +52,18 @@ eval_image = (
     .add_local_dir("configs", "/root/project/configs")
 )
 
+sae_image = (
+    modal.Image.debian_slim(python_version="3.12")
+    .pip_install_from_requirements("requirements.txt")
+    .add_local_dir("src", "/root/project/src")
+    .add_local_dir("configs", "/root/project/configs")
+)
+
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
 
-app = modal.App("training-time-interpretability", image=image)
+app = modal.App("expt-3-tti", image=image)
 
 
 @app.function(
@@ -206,7 +218,7 @@ def evaluate(
     # W&B
     # -----------------------------------------------------------------------
     wandb.init(
-        project="training-time-interpretability",
+        project="expt-3-tti",
         group=wandb_group,
         name=run_name,
     )
@@ -501,6 +513,248 @@ def main(config: str, extra: str = ""):
     train.remote(config=config, extra=extra)
 
 
+@app.function(
+    gpu="A100",
+    timeout=60 * 60 * 6,  # 6 hours
+    image=sae_image,
+    volumes={
+        DATA_DIR: data_volume,
+        CHECKPOINT_DIR: checkpoint_volume,
+    },
+    secrets=[modal.Secret.from_name("wandb-secret")],
+)
+def sae_train(
+    run_name: str,
+    sae_config: str = "configs/expt3_sae_8x.yaml",
+    checkpoint_path: str = "",
+    mlp_topk_ratio: float = 0.0,
+    wandb_group: str = "expt3_sae",
+    layers: str = "all",
+):
+    """
+    Train one SAE per layer on mlp_out activations from a frozen GPT checkpoint.
+
+    Saves to /checkpoints/eval/{run_name}/sae_{config_name}.json and
+             /checkpoints/sae/{run_name}/{config_name}/layer_{i}/sae.pt
+
+    Args:
+        run_name:        name of the GPT run (used for checkpoint path and output)
+        sae_config:      path to SAE YAML config (relative to /root/project)
+        checkpoint_path: optional override for GPT checkpoint path
+        mlp_topk_ratio:  top-k ratio for Top-K MLP models (0.0 = disabled)
+        wandb_group:     W&B group name
+        layers:          "all" or comma-separated layer indices e.g. "0,3,5"
+    """
+    import json
+    import os
+    import sys
+
+    import torch
+    import wandb
+    import yaml
+    from torch.utils.data import DataLoader
+
+    os.chdir("/root/project")
+    sys.path.insert(0, "/root/project")
+
+    from src.data import get_tokenizer, get_tinystories_dataset
+    from src.model import GPT, GPTConfig
+    from src.sae import SAEConfig, SparseAutoencoder, SAETrainer, compute_sae_metrics
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Device: {device}")
+
+    # -----------------------------------------------------------------------
+    # Load SAE config
+    # -----------------------------------------------------------------------
+    with open(sae_config) as f:
+        raw = yaml.safe_load(f)
+    sae_cfg_dict = raw.get("sae", {})
+    sae_cfg_name = raw.get("name", os.path.splitext(os.path.basename(sae_config))[0])
+    sae_cfg = SAEConfig(d_model=384, **sae_cfg_dict)
+    print(f"SAE config: {sae_cfg_name}  d_sae={sae_cfg.d_sae}  λ={sae_cfg.lambda_l1}  steps={sae_cfg.n_steps}")
+
+    # -----------------------------------------------------------------------
+    # Load frozen GPT
+    # -----------------------------------------------------------------------
+    if not checkpoint_path:
+        checkpoint_path = os.path.join(CHECKPOINT_DIR, run_name, "final", "checkpoint.pt")
+
+    print(f"Loading checkpoint: {checkpoint_path}")
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=True)
+
+    model_cfg = GPTConfig(
+        vocab_size=50257,
+        max_seq_len=512,
+        n_layers=6,
+        n_heads=6,
+        d_model=384,
+        d_ff=1536,
+        dropout=0.0,
+        bias=False,
+        mlp_topk_ratio=mlp_topk_ratio,
+    )
+    model = GPT(model_cfg).to(device)
+    model.load_state_dict(ckpt["model"])
+    model.eval()
+    for p in model.parameters():
+        p.requires_grad_(False)
+    print(f"Loaded frozen GPT ({model.num_params():,} params) from step {ckpt.get('step', '?')}")
+
+    # -----------------------------------------------------------------------
+    # Data
+    # -----------------------------------------------------------------------
+    tokenizer = get_tokenizer("gpt2")
+    train_dataset, val_dataset = get_tinystories_dataset(
+        tokenizer,
+        max_length=512,
+        num_workers=4,
+        cache_dir=DATA_DIR,
+    )
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=32,
+        shuffle=True,
+        collate_fn=_make_lm_collator(tokenizer.pad_token_id),
+        num_workers=4,
+        pin_memory=True,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=32,
+        shuffle=False,
+        collate_fn=_make_lm_collator(tokenizer.pad_token_id),
+        num_workers=4,
+        pin_memory=True,
+    )
+
+    # -----------------------------------------------------------------------
+    # Target layers
+    # -----------------------------------------------------------------------
+    if layers == "all":
+        target_layers = list(range(model_cfg.n_layers))
+    else:
+        target_layers = [int(x) for x in layers.split(",")]
+
+    # -----------------------------------------------------------------------
+    # W&B
+    # -----------------------------------------------------------------------
+    wandb_run_name = f"{run_name}_{sae_cfg_name}"
+    wandb.init(
+        project="expt-3-tti",
+        group=wandb_group,
+        name=wandb_run_name,
+        config={
+            "run_name": run_name,
+            "sae_config": sae_cfg_name,
+            "d_sae": sae_cfg.d_sae,
+            "lambda_l1": sae_cfg.lambda_l1,
+            "n_steps": sae_cfg.n_steps,
+            "expansion_factor": sae_cfg.expansion_factor,
+            "mlp_topk_ratio": mlp_topk_ratio,
+        },
+    )
+
+    # -----------------------------------------------------------------------
+    # Train one SAE per layer
+    # -----------------------------------------------------------------------
+    out_dir = os.path.join(CHECKPOINT_DIR, "eval", run_name)
+    os.makedirs(out_dir, exist_ok=True)
+
+    all_metrics = {
+        "sae_config": {
+            "name": sae_cfg_name,
+            "expansion_factor": sae_cfg.expansion_factor,
+            "d_sae": sae_cfg.d_sae,
+            "lambda_l1": sae_cfg.lambda_l1,
+            "n_steps": sae_cfg.n_steps,
+        },
+        "run_name": run_name,
+    }
+
+    train_iter = iter(train_loader)
+
+    for layer_idx in target_layers:
+        print(f"\n--- Layer {layer_idx} ---")
+
+        sae = SparseAutoencoder(sae_cfg).to(device)
+        trainer = SAETrainer(sae, sae_cfg, device)
+
+        # Training loop
+        for step in range(sae_cfg.n_steps):
+            # Get next batch (cycle through train set)
+            try:
+                batch = next(train_iter)
+            except StopIteration:
+                train_iter = iter(train_loader)
+                batch = next(train_iter)
+
+            input_ids = batch["input_ids"].to(device)
+            with torch.no_grad():
+                _, _, activations = model(input_ids, return_activations=True)
+
+            acts = activations[layer_idx]["mlp_out"]     # [B, S, d_model]
+            acts_flat = acts.reshape(-1, acts.shape[-1]) # [B*S, d_model]
+
+            metrics = trainer.step(acts_flat)
+
+            if step % sae_cfg.log_every == 0:
+                print(f"  step {step:5d}  mse={metrics['mse_loss']:.4f}  "
+                      f"l1={metrics['l1_loss']:.4f}  l0={metrics['l0']:.1f}")
+                wandb.log({
+                    f"sae_train/layer_{layer_idx}/mse_loss": metrics["mse_loss"],
+                    f"sae_train/layer_{layer_idx}/l1_loss": metrics["l1_loss"],
+                    f"sae_train/layer_{layer_idx}/l0": metrics["l0"],
+                    "step": step + layer_idx * sae_cfg.n_steps,
+                })
+
+        # Save SAE checkpoint
+        sae_ckpt_dir = os.path.join(CHECKPOINT_DIR, "sae", run_name, sae_cfg_name, f"layer_{layer_idx}")
+        os.makedirs(sae_ckpt_dir, exist_ok=True)
+        torch.save({"sae_state": sae.state_dict(), "sae_config": sae_cfg.__dict__},
+                   os.path.join(sae_ckpt_dir, "sae.pt"))
+
+        # Evaluate on val set
+        print(f"  Evaluating layer {layer_idx} on val set...")
+        layer_metrics = compute_sae_metrics(sae, model, val_loader, layer_idx, device)
+        all_metrics[f"layer_{layer_idx}"] = {**layer_metrics, "n_steps": sae_cfg.n_steps}
+
+        print(f"  mse={layer_metrics['reconstruction_mse']:.4f}  "
+              f"expl_var={layer_metrics['explained_variance']:.3f}  "
+              f"l0={layer_metrics['l0_mean']:.1f}  "
+              f"dead={layer_metrics['dead_latent_fraction']:.3f}")
+
+        wandb.log({
+            f"sae/layer_{layer_idx}/reconstruction_mse": layer_metrics["reconstruction_mse"],
+            f"sae/layer_{layer_idx}/explained_variance": layer_metrics["explained_variance"],
+            f"sae/layer_{layer_idx}/l0_mean": layer_metrics["l0_mean"],
+            f"sae/layer_{layer_idx}/l1_mean": layer_metrics["l1_mean"],
+            f"sae/layer_{layer_idx}/dead_latent_fraction": layer_metrics["dead_latent_fraction"],
+        })
+
+    # -----------------------------------------------------------------------
+    # Mean metrics across target layers
+    # -----------------------------------------------------------------------
+    mean_metrics = {}
+    for key in ["reconstruction_mse", "explained_variance", "l0_mean", "l1_mean", "dead_latent_fraction"]:
+        vals = [all_metrics[f"layer_{i}"][key] for i in target_layers if f"layer_{i}" in all_metrics]
+        if vals:
+            mean_metrics[key] = sum(vals) / len(vals)
+    all_metrics["mean"] = mean_metrics
+
+    wandb.log({f"sae/mean/{k}": v for k, v in mean_metrics.items()})
+
+    # Save JSON artifact
+    artifact_path = os.path.join(out_dir, f"sae_{sae_cfg_name}.json")
+    with open(artifact_path, "w") as f:
+        json.dump(all_metrics, f, indent=2)
+    print(f"\nSaved {artifact_path}")
+
+    wandb.finish()
+    checkpoint_volume.commit()
+    print("Done.")
+
+
 @app.local_entrypoint()
 def eval_main(
     run_name: str,
@@ -524,4 +778,39 @@ def eval_main(
         topk_k=topk_k,
         mlp_topk_ratio=mlp_topk_ratio,
         wandb_group=wandb_group,
+    )
+
+
+@app.local_entrypoint()
+def sae_main(
+    run_name: str,
+    sae_config: str = "configs/expt3_sae_8x.yaml",
+    checkpoint_path: str = "",
+    mlp_topk_ratio: float = 0.0,
+    wandb_group: str = "expt3_sae",
+    layers: str = "all",
+):
+    """
+    Launch SAE training for a frozen GPT checkpoint.
+
+    Usage:
+        # Smoke test — single layer, baseline
+        modal run --detach modal_app.py::sae_main --run-name expt1_baseline_seed42 --layers 0
+
+        # Full 8x run — baseline
+        modal run --detach modal_app.py::sae_main --run-name expt1_baseline_seed42
+
+        # Top-K model (must pass mlp-topk-ratio to reconstruct model correctly)
+        modal run --detach modal_app.py::sae_main --run-name expt2_topk_25pct_seed42 --mlp-topk-ratio 0.25
+
+        # Different expansion factor
+        modal run --detach modal_app.py::sae_main --run-name expt1_baseline_seed42 --sae-config configs/expt3_sae_4x.yaml
+    """
+    sae_train.remote(
+        run_name=run_name,
+        sae_config=sae_config,
+        checkpoint_path=checkpoint_path,
+        mlp_topk_ratio=mlp_topk_ratio,
+        wandb_group=wandb_group,
+        layers=layers,
     )
