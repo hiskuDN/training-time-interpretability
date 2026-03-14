@@ -106,7 +106,7 @@ class SAETrainer:
         acts = acts.float()
         x_hat, latents = self.sae(acts)
 
-        mse_loss = F.mse_loss(x_hat, acts - self.sae.pre_bias)
+        mse_loss = F.mse_loss(x_hat, acts)
         l1_loss = latents.abs().mean()
         total_loss = mse_loss + self.config.lambda_l1 * l1_loss
 
@@ -170,14 +170,12 @@ def compute_sae_metrics(
     latents = torch.cat(all_latents, dim=0) # [N, d_sae]
     x_hat = torch.cat(all_x_hat, dim=0)    # [N, d_model]
 
-    # Reconstruction MSE (against centred input, consistent with training loss)
-    pre_bias = sae.pre_bias.cpu().float()
-    x_centred = x - pre_bias
-    mse = F.mse_loss(x_hat, x_centred).item()
+    # Reconstruction MSE
+    mse = F.mse_loss(x_hat, x).item()
 
-    # Explained variance: 1 - Var(residual) / Var(x_centred)
-    residual = x_centred - x_hat
-    var_x = x_centred.var().item()
+    # Explained variance: 1 - Var(residual) / Var(x)
+    residual = x - x_hat
+    var_x = x.var().item()
     var_res = residual.var().item()
     explained_var = 1.0 - var_res / (var_x + 1e-10)
 

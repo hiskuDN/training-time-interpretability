@@ -2,7 +2,7 @@ name: "expt3_sae_4x"
 wandb_group: "expt3_sae"
 sae:
   expansion_factor: 4       # d_sae = 1536
-  lambda_l1: 1.0e-3
+  lambda_l1: 2.0e-2
   learning_rate: 1.0e-3
   batch_size: 4096
   n_steps: 50000
